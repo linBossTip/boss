@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><!-- 폰에서 화면 폭 그대로 -->
 
-<title>보스 시간표 - 코준</title>
+<title>보스 시간표</title>
 <style>
   html, body { margin:0; height:100%; overflow:hidden; background:#1b1d22; }
   canvas { display:block; }
@@ -72,12 +72,54 @@ function dayLabel(at, now) {
   return (d === 1 ? '내일' : (at.getMonth() + 1) + '/' + at.getDate()) + ' (' + w + ')';
 }
 
-var CARD_W = 360;           // 큰 화면에서는 가운데 이 폭의 카드로(코준 창 크기와 비슷)
+var CARD_W = 360;           // 큰 화면에서는 가운데 이 폭의 카드로(PC 앱 창 크기와 비슷)
 var card = { x: 0, y: 0, w: 0, h: 0 }; // 마지막으로 그린 표 영역(복사할 때 이 부분만 자른다)
 var GOLD = ['#fff3c4', '#f5cf55', '#c99a1e'];
 
+// 시간대 아이콘(출현 시간 왼쪽): 새벽 0~6시 보라 달+별, 오전 6~12시 주황 해돋이, 낮 12~18시 노랑 해, 밤 18~24시 파랑 달
+var PERIODS = [
+  { name: '새벽', color: '#b197fc' },
+  { name: '오전', color: '#ffa94d' },
+  { name: '낮',   color: '#ffd43b' },
+  { name: '밤',   color: '#74c0fc' }
+];
+function periodOf(at) { return PERIODS[Math.floor(at.getHours() / 6)]; }
+function moon(g, x, y, r) { // 초승달: 원에서 오른쪽 위로 비킨 원을 뺀다
+  g.save();
+  g.beginPath(); g.rect(x - r * 2, y - r * 2, r * 4, r * 4); g.arc(x + r * 0.55, y - r * 0.35, r * 0.85, 0, Math.PI * 2);
+  g.clip('evenodd');
+  g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+function rays(g, x, y, r1, r2, from, to, n) {
+  for (var i = 0; i < n; i++) {
+    var a = from + (to - from) * (n === 1 ? 0.5 : i / (n - 1));
+    g.beginPath(); g.moveTo(x + Math.cos(a) * r1, y + Math.sin(a) * r1); g.lineTo(x + Math.cos(a) * r2, y + Math.sin(a) * r2); g.stroke();
+  }
+}
+function periodIcon(g, at, x, y, s) { // (x, y) = 아이콘 가운데, s = 글자 크기
+  var p = periodOf(at), r = s * 0.36;
+  g.save();
+  g.fillStyle = p.color; g.strokeStyle = p.color; g.lineWidth = Math.max(1, s * 0.09); g.lineCap = 'round';
+  if (p.name === '낮') {
+    g.beginPath(); g.arc(x, y, r * 0.62, 0, Math.PI * 2); g.fill();
+    rays(g, x, y, r * 0.95, r * 1.35, 0, Math.PI * 1.75, 8);
+  } else if (p.name === '오전') {
+    var base = y + r * 0.45;
+    g.beginPath(); g.arc(x, base, r * 0.7, Math.PI, 0); g.closePath(); g.fill();
+    rays(g, x, base, r * 1.0, r * 1.4, Math.PI * 1.15, Math.PI * 1.85, 3);
+    g.beginPath(); g.moveTo(x - r * 1.3, base + r * 0.25); g.lineTo(x + r * 1.3, base + r * 0.25); g.stroke();
+  } else if (p.name === '밤') {
+    moon(g, x, y, r);
+  } else { // 새벽: 작은 달 + 별 하나
+    moon(g, x - r * 0.25, y + r * 0.1, r * 0.85);
+    g.beginPath(); g.arc(x + r * 0.85, y - r * 0.7, Math.max(0.8, r * 0.18), 0, Math.PI * 2); g.fill();
+  }
+  g.restore();
+}
+
 // 화면 크기에 맞춰 줄 높이·글자 크기를 정해 한 화면에 모두 그린다(스크롤 없음, 한 줄씩).
-// 큰 화면(PC 브라우저)은 가운데 카드, 좁은 화면(폰·코준 창)은 화면을 꽉 채운다.
+// 큰 화면(PC 브라우저)은 가운데 카드, 좁은 화면(폰·앱 창)은 화면을 꽉 채운다.
 function draw() {
   var now = new Date();
   var rows = upcoming(DATA, now);
@@ -113,7 +155,7 @@ function draw() {
   function widest(px) {
     g.font = '600 ' + px + 'px ' + FONT;
     var w = 0;
-    rows.forEach(function (s) { w = Math.max(w, g.measureText(label(s)).width + g.measureText(' 00시 00분 ').width); });
+    rows.forEach(function (s) { w = Math.max(w, g.measureText(label(s)).width + g.measureText(' 00시 00분 ').width + px * 1.6); });
     return w;
   }
   function label(s) { return s.r.event ? (s.r.days.length ? '🏰 ' : '⚔ ') + s.r.name : s.r.name; }
@@ -130,10 +172,10 @@ function draw() {
   // 제목줄: 기준 시각 (오른쪽은 [복사] 버튼 자리)
   var title = '지금 ' + two(now.getHours()) + ':' + two(now.getMinutes()) + ' 기준', titleColor = C.sub;
   if (META.error) { title += ' · 데이터를 불러오지 못함'; titleColor = C.soon; }
-  else if (META.updatedAt) { // 웹 게시본: 코준이 마지막으로 올린 시각
+  else if (META.updatedAt) { // 웹 게시본: 마지막으로 올린 시각
     var ago = Math.floor((now - META.updatedAt) / 60000);
     title += ' · 갱신 ' + (ago < 1 ? '방금' : ago + '분 전');
-    if (ago >= 40) titleColor = C.soon; // 갱신이 멈춤 → 보조캐/코준 확인 필요
+    if (ago >= 40) titleColor = C.soon; // 갱신이 멈춤 → 올리는 PC 확인 필요
   }
   textAt(title, L, titleColor, 'left', '', size * 0.85);
   var btn = document.getElementById('copy'); // [복사] 버튼을 표 오른쪽 위에 맞춘다
@@ -176,15 +218,19 @@ function draw() {
       g.save();
       g.shadowColor = 'rgba(245,207,85,0.55)'; g.shadowBlur = 6;
       textAt(hm(s.at), R, gold, 'right', '700');
+      var evTimeW = g.measureText(hm(s.at)).width;
       textAt(label(s), L + 2, gold, 'left', '800');
       g.restore();
+      periodIcon(g, s.at, R - evTimeW - size * 0.8, y + rowH / 2, size);
       y += rowH;
       return;
     }
     var color = past ? C.past : soon ? C.soon : C.text;
     textAt(hm(s.at), R, color, 'right', '');
-    var timeW = g.measureText(' ' + hm(s.at)).width;
-    g.save(); g.beginPath(); g.rect(cx, y, cw - pad - timeW, rowH); g.clip(); // 혹시 넘쳐도 시간과 겹치지 않게
+    var timeW = g.measureText(hm(s.at)).width;
+    periodIcon(g, s.at, R - timeW - size * 0.8, y + rowH / 2, size);
+    timeW += size * 1.6;
+    g.save(); g.beginPath(); g.rect(cx, y, cw - pad - timeW, rowH); g.clip(); // 혹시 넘쳐도 시간·아이콘과 겹치지 않게
     textAt(label(s), L, color, 'left', '600');
     g.restore();
     y += rowH;
@@ -219,9 +265,9 @@ document.getElementById('copy').onclick = function () {
 
 function start() { draw(); window.addEventListener('resize', draw); setInterval(draw, 20000); }
 if (DATA) {
-  start(); // 코준이 띄운 로컬 파일: 데이터가 박혀 있다
+  start(); // PC에서 띄운 로컬 파일: 데이터가 박혀 있다
 } else {
-  // 웹 게시본: 코준이 올린 data.json을 1분마다 다시 받는다(캐시 무시)
+  // 웹 게시본: 올려진 data.json을 1분마다 다시 받는다(캐시 무시)
   var started = false;
   var load = function () {
     fetch('data.json?t=' + Date.now(), { cache: 'no-store' })
