@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><!-- 폰에서 화면 폭 그대로 -->
+
+<title>보스 시간표 - 코준</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#1b1d22; }
+  canvas { display:block; }
+  #copy { position:fixed; top:6px; right:8px; background:#3d7bd9; color:#fff; border:0; border-radius:5px;
+          padding:4px 10px; font:12px "Malgun Gothic",sans-serif; cursor:pointer; opacity:.9; }
+  #toast { position:fixed; left:50%; bottom:12px; transform:translateX(-50%); background:#333a46; color:#fff;
+           padding:5px 12px; border-radius:5px; font:12px "Malgun Gothic",sans-serif; opacity:0; transition:opacity .2s; }
+  #toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="copy">복사</button>
+<div id="toast"></div>
+
+<script id="core">
+// ---- 정렬 규칙: lib/services/boss_schedule.dart 와 동일 ----
+var GRACE = 3600 * 1000; // 재스폰형: 젠 후 1시간까지는 "지남"(빨강)으로 맨 위에 둔다
+var DAY = 86400000;
+function weekdayOf(d) { var w = d.getDay(); return w === 0 ? 7 : w; } // 월=1 … 일=7
+function fixedNext(r, now) {
+  for (var d = 0; d <= 8; d++) { // 시각이 지나면 바로 다음 출현(내일/다음 해당 요일)
+    var at = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d, r.h, r.m, 0, 0);
+    if (r.days.length && r.days.indexOf(weekdayOf(at)) < 0) continue;
+    if (at.getTime() > now.getTime()) return at;
+  }
+  return null;
+}
+function atFor(r, now) { return r.respawn ? new Date(r.at) : fixedNext(r, now); }
+function upcoming(records, now) {
+  var slots = records.map(function (r) { return { r: r, at: atFor(r, now) }; });
+  slots.sort(function (a, b) { return (a.at - b.at) || (a.r.order - b.r.order); });
+  // 24시간 안에 나오는 것 + 젠 1시간 이내 지난 것만
+  return slots.filter(function (s) { return s.at - now < DAY && s.at - now > -GRACE; });
+}
+function two(v) { return (v < 10 ? '0' : '') + v; }
+function hm(at) { return two(at.getHours()) + '시 ' + two(at.getMinutes()) + '분'; }
+function clipboardText(records, now) {
+  var lines = ['보스 이름\t출현 시간'];
+  upcoming(records, now).forEach(function (s) { lines.push(s.r.name + '\t' + hm(s.at)); });
+  return lines.join('\n');
+}
+</script>
+
+<script>
+var DATA = /*DATA*/null; // 로컬 파일이면 박혀 있고, 웹 게시본이면 null → data.json을 받아온다
+var META = /*META*/null;
+var C = { bg:'#1b1d22', line:'#2b2e35', hour:'#3d7bd9', text:'#e8e9ec', sub:'#8d929c', soon:'#ffcf5c', past:'#ff6b6b' };
+var FONT = '"Malgun Gothic","맑은 고딕",sans-serif';
+var canvas = document.getElementById('c');
+var WEEK = ['월', '화', '수', '목', '금', '토', '일'];
+
+function dayDiff(at, now) { // 달력 날짜 차이(자정 기준)
+  var a = new Date(at.getFullYear(), at.getMonth(), at.getDate());
+  var b = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((a - b) / DAY);
+}
+function dayLabel(at, now) {
+  var d = dayDiff(at, now), w = WEEK[weekdayOf(at) - 1];
+  return (d === 1 ? '내일' : (at.getMonth() + 1) + '/' + at.getDate()) + ' (' + w + ')';
+}
+
+// 창 크기에 맞춰 줄 높이·글자 크기를 정해 한 화면에 모두 그린다(스크롤 없음, 한 줄씩).
+function draw() {
+  var now = new Date();
+  var rows = upcoming(DATA, now);
+  var dpr = window.devicePixelRatio || 1;
+  var W = window.innerWidth, H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  var g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = C.bg; g.fillRect(0, 0, W, H);
+
+  var pad = 10;
+  var extra = META.missing.length ? 1 : 0;              // 누락 안내 줄
+  var dividers = 0, prevDay = 0;                        // 자정 넘는 날짜 구분 줄 수
+  rows.forEach(function (s) { var d = s.at <= now ? 0 : dayDiff(s.at, now); if (d > prevDay) { dividers++; prevDay = d; } });
+  var lines = rows.length + 2 + extra + dividers;       // 제목줄 + 머리줄 + 보스들 (+누락, 날짜 구분)
+  var rowH = Math.min(30, H / lines);
+  var size = Math.max(8, Math.min(15, rowH * 0.56));
+  // 가장 긴 "이름 + 시간"이 한 줄에 들어갈 때까지 글자를 더 줄인다
+  function widest(px) {
+    g.font = '600 ' + px + 'px ' + FONT;
+    var w = 0;
+    rows.forEach(function (s) { w = Math.max(w, g.measureText(s.r.name).width + g.measureText(' 00시 00분 ').width); });
+    return w;
+  }
+  while (size > 8 && widest(size) > W - pad * 2) size -= 0.5;
+
+  var y = 0;
+  function textAt(t, x, color, align, weight, px) {
+    g.font = (weight || '') + ' ' + (px || size) + 'px ' + FONT;
+    g.fillStyle = color; g.textAlign = align; g.textBaseline = 'middle';
+    g.fillText(t, x, y + rowH / 2);
+  }
+  // 제목줄: 기준 시각 (오른쪽은 [복사] 버튼 자리)
+  var title = '지금 ' + two(now.getHours()) + ':' + two(now.getMinutes()) + ' 기준', titleColor = C.sub;
+  if (META.error) { title += ' · 데이터를 불러오지 못함'; titleColor = C.soon; }
+  else if (META.updatedAt) { // 웹 게시본: 코준이 마지막으로 올린 시각
+    var ago = Math.floor((now - META.updatedAt) / 60000);
+    title += ' · 갱신 ' + (ago < 1 ? '방금' : ago + '분 전');
+    if (ago >= 40) titleColor = C.soon; // 갱신이 멈춤 → 보조캐/코준 확인 필요
+  }
+  textAt(title, pad, titleColor, 'left', '', size * 0.85);
+  y += rowH;
+  if (extra) {
+    textAt('누락: ' + META.missing.join(', '), pad, C.soon, 'left', '', size * 0.8);
+    y += rowH;
+  }
+  // 머리줄
+  textAt('보스 이름', pad, C.sub, 'left', '600', size * 0.9);
+  textAt('출현 시간', W - pad, C.sub, 'right', '600', size * 0.9);
+  y += rowH;
+  g.fillStyle = C.line; g.fillRect(0, y - 1, W, 1);
+
+  var lastHour = null, lastDay = 0;
+  rows.forEach(function (s) {
+    var past = s.at <= now, soon = !past && s.at - now <= 10 * 60000;
+    // 자정을 넘는 지점에 날짜 구분 줄("내일 (월)")
+    var day = past ? 0 : dayDiff(s.at, now);
+    if (day > lastDay) {
+      g.fillStyle = C.hour; g.fillRect(0, y, W, 1);
+      textAt(dayLabel(s.at, now), W / 2, C.hour, 'center', '600', size * 0.8);
+      y += rowH;
+      lastDay = day;
+      lastHour = null;
+    }
+    var hour = past ? 'past' : s.at.getDate() + '-' + s.at.getHours();
+    g.fillStyle = lastHour !== null && hour !== lastHour ? C.hour : C.line; // 시간대가 바뀌면 파란 선
+    g.fillRect(0, y, W, 1);
+    lastHour = hour;
+    var color = past ? C.past : soon ? C.soon : C.text;
+    textAt(hm(s.at), W - pad, color, 'right', '');
+    var timeW = g.measureText(' ' + hm(s.at)).width;
+    g.save(); g.beginPath(); g.rect(0, y, W - pad - timeW, rowH); g.clip(); // 혹시 넘쳐도 시간과 겹치지 않게
+    textAt(s.r.name, pad, color, 'left', '600');
+    g.restore();
+    y += rowH;
+  });
+}
+
+function toast(msg) {
+  var t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(function () { t.classList.remove('show'); }, 1400);
+}
+
+// [복사] = 보이는 표를 그대로 PNG 이미지로 클립보드에(버튼은 캔버스 밖이라 안 찍힌다).
+document.getElementById('copy').onclick = function () {
+  draw();
+  canvas.toBlob(function (blob) {
+    if (navigator.clipboard && window.ClipboardItem && blob) {
+      navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+          .then(function () { toast('이미지 복사됨'); }, copyText);
+    } else { copyText(); }
+  }, 'image/png');
+  function copyText() { // 이미지 복사가 막힌 환경이면 글자로라도
+    var ta = document.createElement('textarea'); ta.value = clipboardText(DATA, new Date());
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    toast('이미지 복사 실패 — 글자로 복사됨');
+  }
+};
+
+function start() { draw(); window.addEventListener('resize', draw); setInterval(draw, 20000); }
+if (DATA) {
+  start(); // 코준이 띄운 로컬 파일: 데이터가 박혀 있다
+} else {
+  // 웹 게시본: 코준이 올린 data.json을 1분마다 다시 받는다(캐시 무시)
+  var started = false;
+  var load = function () {
+    fetch('data.json?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        DATA = j.bosses; META = { missing: j.missing || [], updatedAt: j.updatedAt };
+        if (started) draw(); else { started = true; start(); }
+      })
+      .catch(function () {
+        if (!started) { DATA = []; META = { missing: [], error: true }; started = true; start(); }
+      });
+  };
+  load();
+  setInterval(load, 60000);
+}
+</script>
+</body>
+</html>
